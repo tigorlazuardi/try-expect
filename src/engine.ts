@@ -21,29 +21,19 @@ function isPromise<T>(value: unknown): value is Promise<T> {
     );
 }
 
-export interface Executor<
-    Args extends any[],
-    Err extends Error,
-    ErrorBuilder extends (ctx: Context, ...args: Args) => Err,
-> {
+export interface Executor<Args extends any[]> {
     <T>(
         fn: () => T,
-    ): T extends Promise<any>
-        ? ResultAsync<Awaited<T>, Args, Err, ErrorBuilder>
-        : Result<T, Args, Err, ErrorBuilder>;
-    <T>(promise: Promise<T>): ResultAsync<T, Args, Err, ErrorBuilder>;
+    ): T extends Promise<any> ? ResultAsync<Awaited<T>, Args> : Result<T, Args>;
+    <T>(promise: Promise<T>): ResultAsync<T, Args>;
 }
 
-export function createExecutor<
-    Args extends any[],
-    Err extends Error,
-    ErrorBuilder extends (ctx: Context, ...args: [...Args]) => Err,
->(builder: ErrorBuilder): Executor<Args, Err, ErrorBuilder> {
+export function createExecutor<Args extends any[]>(
+    builder: (ctx: Context, ...args: [...Args]) => Error,
+): Executor<Args> {
     return (<T>(
         fn: (() => T | Promise<T>) | Promise<T>,
-    ):
-        | Result<T, Args, Err, ErrorBuilder>
-        | ResultAsync<T, Args, Err, ErrorBuilder> => {
+    ): Result<T, Args> | ResultAsync<T, Args> => {
         try {
             if (isPromise(fn)) {
                 return new ResultAsync(builder, fn);
@@ -54,13 +44,9 @@ export function createExecutor<
             }
             return new Result(builder, data);
         } catch (e) {
-            return new Result<T, Args, Err, ErrorBuilder>(
-                builder,
-                undefined,
-                e,
-            );
+            return new Result<T, Args>(builder, undefined, e);
         }
-    }) as Executor<Args, Err, ErrorBuilder>;
+    }) as Executor<Args>;
 }
 
 interface Class {
@@ -76,18 +62,13 @@ function isClass(value: unknown): value is Class {
     );
 }
 
-export class Result<
-    Return,
-    Args extends any[],
-    Err extends Error,
-    ErrorBuilder extends (ctx: Context, ...args: Args) => Err,
-> {
-    protected classHandlers: [Class, () => Err][] = [];
-    protected undefinedHandler?: () => Err;
-    protected nullHandler?: () => Err;
+export class Result<Return, Args extends any[]> {
+    protected classHandlers: [Class, () => Error][] = [];
+    protected undefinedHandler?: () => Error;
+    protected nullHandler?: () => Error;
 
     constructor(
-        protected builder: ErrorBuilder,
+        protected builder: Function,
         private data?: Return,
         private err?: unknown,
     ) {}
@@ -162,7 +143,7 @@ export class Result<
         v: undefined,
         message: string,
         ...args: Args
-    ): Result<U, Args, Err, ErrorBuilder>;
+    ): Result<U, Args>;
     /**
      * expect (undefined) asserts that the Data (not the Error) is not undefined.
      *
@@ -170,33 +151,31 @@ export class Result<
      */
     expect<U extends Exclude<Return, undefined>>(
         v: undefined,
-        handler: (ctx: Context<undefined>) => Err,
-    ): Result<U, Args, Err, ErrorBuilder>;
+        handler: (ctx: Context<undefined>) => Error,
+    ): Result<U, Args>;
     expect<U extends Exclude<Return, null>>(
         v: null,
         message: string,
         ...args: Args
-    ): Result<U, Args, Err, ErrorBuilder>;
+    ): Result<U, Args>;
     expect<U extends Exclude<Return, null>>(
         v: null,
-        handler: (ctx: Context<null>) => Err,
-    ): Result<U, Args, Err, ErrorBuilder>;
+        handler: (ctx: Context<null>) => Error,
+    ): Result<U, Args>;
     expect<C extends Class, U extends Exclude<Return, C>>(
         v: C,
         message: string,
         ...args: Args
-    ): Result<U, Args, Err, ErrorBuilder>;
+    ): Result<U, Args>;
     expect<C extends Class, U extends Exclude<Return, C>>(
         v: C,
-        handler: (ctx: Context<C>) => Err,
-    ): Result<U, Args, Err, ErrorBuilder>;
-    /**
-     * expect (handle all) handles everything uncovered by the other expect methods
-     * and acts as a finisher for the expect chain.
-     *
-     */
-    expect(message: string, ...args: Args): Return;
-    expect(...args: any[]): Result<Return, Args, Err, ErrorBuilder> | Return {
+        handler: (ctx: Context<C>) => Error,
+    ): Result<U, Args>;
+    expect(
+        first: string | undefined | null | Class,
+        second: string | Function,
+        ...rest: any[]
+    ): Result<Return, Args> | Return {
         const file = new Error().stack?.split("\n")[2].split(" (")[0] ?? "";
         const line = Number(file.split(":")[1]) || 0;
         const ctx: Context = {
@@ -207,15 +186,15 @@ export class Result<
             source: this.err,
         };
 
-        if (isClass(args[0])) {
-            if (args.length === 2 && typeof args[1] === "function") {
-                const fn = (): Err => args[1](ctx);
-                this.classHandlers.push([args[0], fn]);
+        if (isClass(first)) {
+            if (typeof second === "function") {
+                const fn = (): Error => second(ctx);
+                this.classHandlers.push([first, fn]);
                 return this;
             }
             ctx.message = args[1] as string;
             const argz = args.slice(2) as Args;
-            const fn = (): Err => this.builder(ctx, ...argz);
+            const fn = (): Error => this.builder(ctx, ...argz);
             this.classHandlers.push([args[0], fn]);
             return this;
         }
@@ -246,14 +225,12 @@ export class Result<
     }
 }
 
-export class ResultAsync<
+export class ResultAsync<Return, Args extends any[]> extends Result<
     Return,
-    Args extends any[],
-    Err extends Error,
-    ErrorBuilder extends (ctx: Context, ...args: Args) => Err,
-> extends Result<Return, Args, Err, ErrorBuilder> {
+    Args
+> {
     constructor(
-        builder: ErrorBuilder,
+        builder: Function,
         private promise: Promise<Return>,
     ) {
         super(builder);
